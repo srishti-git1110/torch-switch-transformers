@@ -61,7 +61,7 @@ class ExpertAllocation(nn.Module):
         expert_mask = (total_expert_allocation <= expert_capacity).float()
         revised_expert_allocation = expert_mask * flat_routed_experts
         routed_experts = revised_expert_allocation.view(
-            x.shape[0], x.shape[1], self.num_experts
+            routed_experts.shape
         )
 
         routed_expert_probs = expert_probs * routed_experts
