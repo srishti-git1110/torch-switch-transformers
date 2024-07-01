@@ -34,9 +34,10 @@ class ExpertAllocation(nn.Module):
         self.alpha = alpha
         self.use_aux_loss = use_aux_loss
 
-
     def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-        expert_capacity = ((x.shape[0] * x.shape[1]) / self.num_experts) * self.capacity_factor
+        expert_capacity = (
+            (x.shape[0] * x.shape[1]) / self.num_experts
+        ) * self.capacity_factor
 
         expert_probs = self.router(x)
         top_prob, top_idx = expert_probs.topk(1, dim=-1)
@@ -44,34 +45,33 @@ class ExpertAllocation(nn.Module):
         routed_experts = torch.zeros_like(expert_probs).scatter_(
             dim=-1,
             index=top_idx,
-            src=torch.ones_like(top_prob), 
+            src=torch.ones_like(top_prob),
         )
 
         aux_loss = 0
         if self.use_aux_loss:
             total_tokens = x.shape[0] * x.shape[1]
-            f_i = torch.sum(routed_experts, dim=(0, 1)) * (1/total_tokens)
-            P_i = (torch.sum(expert_probs, dim=(0, 1))) * (1/total_tokens)
+            f_i = torch.sum(routed_experts, dim=(0, 1)) * (1 / total_tokens)
+            P_i = (torch.sum(expert_probs, dim=(0, 1))) * (1 / total_tokens)
 
-            aux_loss = self.alpha * self.num_experts * torch.sum((f_i*P_i))
-        
+            aux_loss = self.alpha * self.num_experts * torch.sum((f_i * P_i))
+
         flat_routed_experts = routed_experts.view(-1, self.num_experts)
-        total_expert_allocation = torch.cumsum(
-            flat_routed_experts,
-            dim=0
-        )
+        total_expert_allocation = torch.cumsum(flat_routed_experts, dim=0)
         expert_mask = (total_expert_allocation <= expert_capacity).float()
         revised_expert_allocation = expert_mask * flat_routed_experts
-        routed_experts = revised_expert_allocation.view(x.shape[0], x.shape[1], self.num_experts)
+        routed_experts = revised_expert_allocation.view(
+            x.shape[0], x.shape[1], self.num_experts
+        )
 
         routed_expert_probs = expert_probs * routed_experts
 
         return routed_expert_probs, aux_loss
-    
+
 
 class SwitchLayer(nn.Module):
     def __init__(
-        self, 
+        self,
         inp_dim: int,
         num_experts: int,
         capacity_factor: float = 1.0,
@@ -82,20 +82,16 @@ class SwitchLayer(nn.Module):
         self.inp_dim = inp_dim
         self.num_experts = num_experts
         self.expert_allocation = ExpertAllocation(
-            inp_dim, 
-            num_experts,
-            capacity_factor,
-            use_aux_loss,
-            alpha)
+            inp_dim, num_experts, capacity_factor, use_aux_loss, alpha
+        )
         self.experts = nn.ModuleList(
-            [
-                nn.Linear(inp_dim, inp_dim)
-                for _ in range(num_experts)
-            ]
+            [nn.Linear(inp_dim, inp_dim) for _ in range(num_experts)]
         )
 
     def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
-        routed_expert_probs, aux_loss = self.expert_allocation(x) # (bs, sl, num_experts)
+        routed_expert_probs, aux_loss = self.expert_allocation(
+            x
+        )
 
         active_tokens = (routed_expert_probs.sum(dim=-1) > 0).view(-1)
         expert_probs, expert_indices = routed_expert_probs.topk(1, dim=-1)
@@ -105,10 +101,9 @@ class SwitchLayer(nn.Module):
         flat_x = x.view(-1, self.inp_dim)
         active_x = flat_x[active_tokens]
         active_out = torch.zeros_like(active_x)
-        # active_routed_expert_probs = routed_expert_probs.view(-1, self.num_experts)[active_tokens]
 
         for i, expert in enumerate(self.num_experts):
-            mask = (active_experts == i)
+            mask = active_experts == i
             if mask.any():
                 expert_output = expert(active_x[mask])
                 active_out[mask] = expert_output
@@ -119,7 +114,8 @@ class SwitchLayer(nn.Module):
         out = out.view(x.shape)
 
         return out, aux_loss
-    
+
+
 class SwitchTransformerBlock(nn.Module):
     def __init__(
         self,
@@ -136,16 +132,14 @@ class SwitchTransformerBlock(nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
         self.switch_layer = SwitchLayer(
-            inp_dim,
-            num_experts,
-            capacity_factor,
-            use_aux_loss,
-            alpha
+            inp_dim, num_experts, capacity_factor, use_aux_loss, alpha
         )
         self.norm = nn.LayerNorm(inp_dim)
-        self.attn_block = nn.MultiheadAttention(inp_dim, num_heads, dropout, batch_first=True)
+        self.attn_block = nn.MultiheadAttention(
+            inp_dim, num_heads, dropout, batch_first=True
+        )
 
-    def forward(self, x:torch.Tensor):
+    def forward(self, x: torch.Tensor)  -> (torch.Tensor, torch.Tensor):
         residual = x
         attn_output, _ = self.attn_block(x)
         x = attn_output + residual
@@ -157,7 +151,8 @@ class SwitchTransformerBlock(nn.Module):
         x = self.norm(x)
 
         return x, aux_loss
-    
+
+
 class SwitchTransformer(nn.Module):
     def __init__(
         self,
@@ -184,7 +179,7 @@ class SwitchTransformer(nn.Module):
                     capacity_factor,
                     use_aux_loss,
                     alpha,
-                    dropout
+                    dropout,
                 )
             )
         self.output_layer = nn.Sequential(
@@ -193,37 +188,15 @@ class SwitchTransformer(nn.Module):
             nn.Linear(inp_dim, vocab_size),
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         x = self.embedding(x)
         total_aux_loss = 0
 
         for layer in self.layers:
             x, aux_loss = layer(x)
             total_aux_loss += aux_loss
-        
+
         x = self.output_layer(x)
-        
+
         return x, total_aux_loss
-
-        
-
-
-
-
-
-        
-
-
-
-
-
-        
-
-
-        
-
-
-
-
-
-        
+    
