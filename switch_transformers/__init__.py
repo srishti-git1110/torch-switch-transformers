@@ -1,4 +1,4 @@
-from src.switch_transformer import (
+from .switch_transformer import (
     Router,
     ExpertAllocation,
     SwitchLayer,
