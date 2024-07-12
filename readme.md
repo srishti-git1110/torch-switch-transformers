@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 4. Usage
 
-```
+```python
 import torch
 
 from switch_transformers import SwitchTransformer
