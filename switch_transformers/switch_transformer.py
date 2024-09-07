@@ -1,5 +1,8 @@
+from typing import Optional, Union
 import torch
 from torch import nn
+
+from switch_transformers.utils import update_gating_biases
 
 
 class Router(nn.Module):
@@ -76,6 +79,7 @@ class SwitchLayer(nn.Module):
         num_experts: int,
         capacity_factor: float = 1.0,
         use_aux_loss: bool = True,
+        use_biased_gating: bool = False,
         alpha: float = 0.01,
     ):
         super(SwitchLayer, self).__self__()
@@ -87,16 +91,34 @@ class SwitchLayer(nn.Module):
         self.experts = nn.ModuleList(
             [nn.Linear(inp_dim, inp_dim) for _ in range(num_experts)]
         )
+        self.use_biased_gating = use_biased_gating
+        if use_biased_gating:
+            self.gating_biases = torch.Tensor(torch.zeros(num_experts))
 
     def forward(self, x: torch.Tensor) -> (torch.Tensor, torch.Tensor):
         routed_expert_probs, aux_loss = self.expert_allocation(
             x
         )
-
         active_tokens = (routed_expert_probs.sum(dim=-1) > 0).view(-1)
-        expert_probs, expert_indices = routed_expert_probs.topk(1, dim=-1)
+        expert_probs, _ = routed_expert_probs.topk(1, dim=-1)
+
+        if self.use_biased_gating:
+            routed_expert_probs += self.gating_biases
+
+        _, expert_indices = routed_expert_probs.topk(1, dim=-1)
         expert_probs, expert_indices = expert_probs.view(-1, 1), expert_indices.view(-1)
         active_experts = expert_indices[active_tokens]
+
+
+        if self.use_biased_gating:
+            token_count_per_expert = torch.bincount(active_experts, minlength=self.num_experts)
+            ideal_average_tokens_per_expert = (x.shape[0] * x.shape[1]) / self.num_experts
+
+            error_sign = ideal_average_tokens_per_expert - token_count_per_expert
+            self.gating_biases = update_gating_biases(
+                self.gating_biases,
+                error_sign,
+            )
 
         flat_x = x.view(-1, self.inp_dim)
         active_x = flat_x[active_tokens]
@@ -124,6 +146,7 @@ class SwitchTransformerBlock(nn.Module):
         num_heads: int,
         capacity_factor: float = 1.0,
         use_aux_loss: bool = True,
+        use_biased_gating: bool = False,
         alpha: float = 0.01,
         dropout: float = 0.1,
     ):
@@ -132,7 +155,7 @@ class SwitchTransformerBlock(nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
         self.switch_layer = SwitchLayer(
-            inp_dim, num_experts, capacity_factor, use_aux_loss, alpha
+            inp_dim, num_experts, capacity_factor, use_aux_loss, use_biased_gating, alpha
         )
         self.norm = nn.LayerNorm(inp_dim)
         self.attn_block = nn.MultiheadAttention(
@@ -160,12 +183,20 @@ class SwitchTransformer(nn.Module):
         num_experts: int,
         num_heads: int,
         vocab_size: int,
+        use_biased_gating: Optional[bool] = False,
         depth: int = 12,
         capacity_factor: float = 1.0,
-        use_aux_loss: bool = True,
+        use_aux_loss: Optional[bool] = False,
         alpha: float = 0.01,
         dropout: float = 0.1,
     ):
+        super(SwitchTransformer, self).__init__()
+        assert (use_aux_loss and use_biased_gating), "Both use_aux_loss and use_biased_gating cannot be True simultaneously. And only one can be True at a time!"
+
+        if not (use_aux_loss ^ use_biased_gating):
+            use_aux_loss = True
+            use_biased_gating = False
+
         self.vocab_size = vocab_size
         self.embedding = nn.Embedding(vocab_size, inp_dim)
         self.layers = nn.ModuleList([])
@@ -178,6 +209,7 @@ class SwitchTransformer(nn.Module):
                     vocab_size,
                     capacity_factor,
                     use_aux_loss,
+                    use_biased_gating,
                     alpha,
                     dropout,
                 )

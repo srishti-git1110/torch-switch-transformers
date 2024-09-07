@@ -5,6 +5,21 @@ Read also my [blogpost](https://srishti-git1110.github.io/blog/moes/) covering t
 
 ![Switch Layer](switch_layer.png#center)
 
+## News
+- Now supporting the latest aux_loss free load balancing technique from [this](https://arxiv.org/pdf/2408.15664v1) paper. Simply pass `use_biased_gating=True` while instantiating the `SwitchTransformer` class. 
+
+Rest all is taken care of!
+
+```python
+switch_transformer = SwitchTransformer(
+    inp_dim,
+    num_experts,
+    num_heads,
+    vocab_size,
+    use_biased_gating=True,
+).cuda()
+```
+
 ## Usage
 
 1. Clone the repo
@@ -27,6 +42,8 @@ pip install -r requirements.txt
 
 4. Usage
 
+#### With aux_loss
+
 ```python
 import torch
 
@@ -41,9 +58,22 @@ switch_transformer = SwitchTransformer(
     inp_dim,
     num_experts,
     num_heads,
-    vocab_size
+    vocab_size,
+    use_aux_loss=True, # optional since this is used by default if use_biased_gating is not True
 ).cuda()
 
 x = torch.randn(2, 1024, inp_dim).cuda()
 output, total_aux_loss = switch_transformer(x)
+```
+
+#### With aux_loss free load balancing
+
+```python
+switch_transformer = SwitchTransformer(
+    inp_dim,
+    num_experts,
+    num_heads,
+    vocab_size,
+    use_biased_gating=True,
+).cuda()
 ```
